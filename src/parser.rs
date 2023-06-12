@@ -1,22 +1,21 @@
 use crate::{token::Token, tokenizer::Tokenizer};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 pub fn parse(source: &str) -> Result<JsonNode, String> {
-    let tokens = Tokenizer::new(source).tokenize();
-    match tokens {
-        Ok(tokens) => JsonParser::new(tokens).parse(),
-        Err(message) => Err(message),
-    }
+    JsonParser::new(source).parse()
 }
 
 struct JsonParser<'a> {
-    current: usize,
-    tokens: Vec<Token<'a>>,
+    tokenizer: Tokenizer<'a>,
+    buffer: VecDeque<Token<'a>>,
 }
 
 impl<'a> JsonParser<'a> {
-    pub fn new(tokens: Vec<Token<'a>>) -> JsonParser<'a> {
-        JsonParser { current: 0, tokens }
+    pub fn new(source: &'a str) -> JsonParser<'a> {
+        JsonParser {
+            tokenizer: Tokenizer::new(source),
+            buffer: VecDeque::new(),
+        }
     }
 
     pub fn parse(&mut self) -> Result<JsonNode, String> {
@@ -24,33 +23,37 @@ impl<'a> JsonParser<'a> {
     }
 
     fn value(&mut self) -> Result<JsonNode, String> {
-        let token = self.advance();
-        match token {
+        let tokenopt = self.advance();
+        match tokenopt {
             Some(token) => match token {
-                Token::String(s) => JsonParser::string(s),
-                Token::Number(s) => Ok(JsonParser::number(s)),
-                Token::True => Ok(JsonNode::Bool(true)),
-                Token::False => Ok(JsonNode::Bool(false)),
-                Token::Null => Ok(JsonNode::Null),
-                Token::LeftSquareBracket => self.array(),
-                Token::LeftCurlyBracket => self.object(),
-                Token::RightSquareBracket => Err("Unexpected ]".to_string()),
-                Token::RightCurlyBracket => Err("Unexpected [".to_string()),
-                Token::Comma => Err("Unexpected comma".to_string()),
-                Token::Colon => Err("Unexpected colon".to_string()),
+                Token::String { text, .. } => JsonParser::string(text),
+                Token::Number { text, .. } => Ok(JsonParser::number(&text)),
+                Token::True { .. } => Ok(JsonNode::Bool(true)),
+                Token::False { .. } => Ok(JsonNode::Bool(false)),
+                Token::Null { .. } => Ok(JsonNode::Null),
+                Token::LeftSquareBracket { .. } => self.array(),
+                Token::LeftCurlyBracket { .. } => self.object(),
+                Token::RightSquareBracket { .. } => Err("Unexpected ]".to_string()),
+                Token::RightCurlyBracket { .. } => Err("Unexpected [".to_string()),
+                Token::Comma { .. } => Err("Unexpected comma".to_string()),
+                Token::Colon { .. } => Err("Unexpected colon".to_string()),
+                Token::Error { message, .. } => Err(message.to_string()),
             },
-            None => Err(String::from("empty")),
+            None => Err("eof".to_string()),
         }
     }
 
     fn object(&mut self) -> Result<JsonNode, String> {
         let mut obj: HashMap<String, JsonNode> = HashMap::new();
+        loop {
+            let token = self.advance();
+            if token.is_none() {
+                return Err("eof".to_string());
+            }
 
-        while self.peek().is_some() {
-            let token = self.advance().unwrap();
-            let string = match token {
-                Token::String(s) => JsonParser::escape(s.clone()),
-                Token::RightCurlyBracket => break,
+            let string = match token.unwrap() {
+                Token::String { text, .. } => JsonParser::escape(text.clone()),
+                Token::RightCurlyBracket { .. } => break,
                 _ => return Err("object key is not string".to_string()),
             };
 
@@ -61,7 +64,7 @@ impl<'a> JsonParser<'a> {
 
             match self.advance() {
                 Some(token) => match token {
-                    Token::Colon => {}
+                    Token::Colon { .. } => {}
                     _ => return Err("expect :".to_string()),
                 },
                 None => return Err("expect :".to_string()),
@@ -76,8 +79,8 @@ impl<'a> JsonParser<'a> {
 
             match self.advance() {
                 Some(token) => match token {
-                    Token::RightCurlyBracket => break,
-                    Token::Comma => continue,
+                    Token::RightCurlyBracket { .. } => break,
+                    Token::Comma { .. } => continue,
                     _ => return Err(format!("error: expected , or }} got: {}", token)),
                 },
                 None => return Err("Error: unexpected eof".to_string()),
@@ -89,27 +92,29 @@ impl<'a> JsonParser<'a> {
 
     fn array(&mut self) -> Result<JsonNode, String> {
         let mut arr: Vec<JsonNode> = vec![];
+        loop {
+            let token = self.peek();
+            if token.is_none() {
+                return Err("eof".to_string());
+            }
 
-        while self.peek().is_some() {
-            match self.peek().unwrap() {
-                Token::RightSquareBracket => {
+            let value = match token.unwrap() {
+                Token::RightSquareBracket { .. } => {
                     self.advance();
                     break;
                 }
-                _ => {}
-            }
-
-            let value = match self.value() {
-                Ok(v) => v,
-                Err(msg) => return Err(format!("error: parsing array value: {}", msg)),
+                _ => self.value(),
             };
 
-            arr.push(value);
+            match value {
+                Ok(value) => arr.push(value),
+                Err(e) => return Err(e),
+            }
 
             match self.advance() {
                 Some(token) => match token {
-                    Token::RightSquareBracket => break,
-                    Token::Comma => continue,
+                    Token::RightSquareBracket { .. } => break,
+                    Token::Comma { .. } => continue,
                     _ => return Err(format!("error: expected , or ] got: {}", token)),
                 },
                 None => return Err("Error: unexpected eof".to_string()),
@@ -190,22 +195,25 @@ impl<'a> JsonParser<'a> {
         JsonNode::Number(s.parse::<f64>().unwrap())
     }
 
-    fn peek(&mut self) -> Option<&Token<'a>> {
-        self.tokens.get(self.current)
+    fn advance(&mut self) -> Option<Token> {
+        if !self.buffer.is_empty() {
+            let token = self.buffer.pop_front();
+            return token;
+        }
+
+        self.tokenizer.next()
     }
 
-    fn advance(&mut self) -> Option<&Token<'a>> {
-        let t = self.tokens.get(self.current);
-        match t {
-            Some(t) => {
-                self.current += 1;
-                Some(t)
+    fn peek(&mut self) -> Option<Token> {
+        let token = self.tokenizer.next();
+        match token {
+            Some(token) => {
+                self.buffer.push_back(token);
+                Some(token)
             }
             None => None,
         }
     }
-
-    // fn compile() -> JsonNode {}
 }
 
 pub enum JsonNode {
@@ -272,6 +280,30 @@ mod tests {
     static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
     use super::*;
+
+    #[test]
+    fn empty_object() {
+        let src = "{}";
+        let json = parse(src).unwrap();
+
+        json.as_map().unwrap();
+    }
+
+    #[test]
+    fn empty_array() {
+        let src = "[]";
+        let json = parse(src).unwrap();
+
+        json.as_vec().unwrap();
+    }
+
+    #[test]
+    fn object_with_empty_array() {
+        let src = "{\"a\":[]}";
+        let json = parse(src).unwrap();
+
+        json.as_map().unwrap().get("a").unwrap().as_vec().unwrap();
+    }
 
     #[test]
     fn it_works() {
