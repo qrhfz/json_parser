@@ -1,4 +1,7 @@
-use crate::{token::Token, tokenizer::Tokenizer};
+use crate::{
+    token::{Token, TokenType},
+    tokenizer::Tokenizer,
+};
 use std::collections::{HashMap, VecDeque};
 
 pub fn parse(source: &str) -> Result<JsonNode, String> {
@@ -10,6 +13,11 @@ struct JsonParser<'a> {
     buffer: VecDeque<Token<'a>>,
 }
 
+struct JsonError<'a> {
+    message: &'a str,
+    token: Option<Token<'a>>,
+}
+
 impl<'a> JsonParser<'a> {
     pub fn new(source: &'a str) -> JsonParser<'a> {
         JsonParser {
@@ -19,87 +27,151 @@ impl<'a> JsonParser<'a> {
     }
 
     pub fn parse(&mut self) -> Result<JsonNode, String> {
-        self.value()
-    }
-
-    fn value(&mut self) -> Result<JsonNode, String> {
-        let tokenopt = self.advance();
-        match tokenopt {
-            Some(token) => match token {
-                Token::String { text, .. } => JsonParser::string(text),
-                Token::Number { text, .. } => Ok(JsonParser::number(&text)),
-                Token::True { .. } => Ok(JsonNode::Bool(true)),
-                Token::False { .. } => Ok(JsonNode::Bool(false)),
-                Token::Null { .. } => Ok(JsonNode::Null),
-                Token::LeftSquareBracket { .. } => self.array(),
-                Token::LeftCurlyBracket { .. } => self.object(),
-                Token::RightSquareBracket { .. } => Err("Unexpected ]".to_string()),
-                Token::RightCurlyBracket { .. } => Err("Unexpected [".to_string()),
-                Token::Comma { .. } => Err("Unexpected comma".to_string()),
-                Token::Colon { .. } => Err("Unexpected colon".to_string()),
-                Token::Error { message, .. } => Err(message.to_string()),
+        match self.value() {
+            Ok(json) => Ok(json),
+            Err(e) => match e.token {
+                Some(token) => Err(format!(
+                    "error: {}, at index: {}, line: {}",
+                    e.message, token.index, token.line
+                )),
+                None => Err(format!("error: {}", e.message)),
             },
-            None => Err("eof".to_string()),
         }
     }
 
-    fn object(&mut self) -> Result<JsonNode, String> {
+    fn value(&mut self) -> Result<JsonNode, JsonError<'a>> {
+        let tokenopt = self.advance();
+        match tokenopt {
+            Some(token) => match token.token_type {
+                TokenType::Number { text } => Ok(JsonParser::number(&text)),
+                TokenType::String { text } => JsonParser::string(&text),
+                TokenType::True => Ok(JsonNode::Bool(true)),
+                TokenType::False => Ok(JsonNode::Bool(false)),
+                TokenType::Null => Ok(JsonNode::Null),
+                TokenType::LeftSquareBracket => self.array(),
+                TokenType::LeftCurlyBracket => self.object(),
+                TokenType::RightSquareBracket => Err(JsonError {
+                    message: "Unexpected ]",
+                    token: Some(token),
+                }),
+                TokenType::RightCurlyBracket => Err(JsonError {
+                    message: "Unexpected [",
+                    token: Some(token),
+                }),
+                TokenType::Comma => Err(JsonError {
+                    message: "Unexpected comma",
+                    token: Some(token),
+                }),
+                TokenType::Colon => Err(JsonError {
+                    message: "Unexpected colon",
+                    token: Some(token),
+                }),
+                TokenType::Error { message, .. } => Err(JsonError {
+                    message,
+                    token: Some(token),
+                }),
+            },
+            None => Err(JsonError {
+                message: "eof",
+                token: None,
+            }),
+        }
+    }
+
+    fn object(&mut self) -> Result<JsonNode, JsonError<'a>> {
         let mut obj: HashMap<String, JsonNode> = HashMap::new();
         loop {
             let token = self.advance();
-            if token.is_none() {
-                return Err("eof".to_string());
-            }
-
-            let string = match token.unwrap() {
-                Token::String { text, .. } => JsonParser::escape(text.clone()),
-                Token::RightCurlyBracket { .. } => break,
-                _ => return Err("object key is not string".to_string()),
+            let string = match token.clone() {
+                Some(token) => match token.token_type {
+                    TokenType::String { text, .. } => JsonParser::escape(text.clone()),
+                    TokenType::RightCurlyBracket { .. } => break,
+                    _ => {
+                        return Err(JsonError {
+                            message: "object key is not string",
+                            token: Some(token),
+                        })
+                    }
+                },
+                None => {
+                    return Err(JsonError {
+                        message: "eof",
+                        token: None,
+                    })
+                }
             };
 
             let key = match string {
                 Ok(s) => s,
-                Err(_) => return Err("invalid string".to_string()),
+                Err(_) => {
+                    return Err(JsonError {
+                        message: "invalid string",
+                        token,
+                    })
+                }
             };
 
             match self.advance() {
-                Some(token) => match token {
-                    Token::Colon { .. } => {}
-                    _ => return Err("expect :".to_string()),
+                Some(token) => match token.token_type {
+                    TokenType::Colon { .. } => {}
+                    _ => {
+                        return Err(JsonError {
+                            message: "expect :",
+                            token: Some(token),
+                        })
+                    }
                 },
-                None => return Err("expect :".to_string()),
+                None => {
+                    return Err(JsonError {
+                        message: "expect :",
+                        token: None,
+                    })
+                }
             }
 
             let value = match self.value() {
                 Ok(v) => v,
-                Err(msg) => return Err(format!("error: parsing object value: {}", msg)),
+                Err(e) => return Err(e),
             };
 
             obj.insert(key, value);
 
             match self.advance() {
-                Some(token) => match token {
-                    Token::RightCurlyBracket { .. } => break,
-                    Token::Comma { .. } => continue,
-                    _ => return Err(format!("error: expected , or }} got: {}", token)),
+                Some(token) => match token.token_type {
+                    TokenType::RightCurlyBracket { .. } => break,
+                    TokenType::Comma { .. } => continue,
+                    _ => {
+                        return Err(JsonError {
+                            message: "expected comma or object close",
+                            token: None,
+                        })
+                    }
                 },
-                None => return Err("Error: unexpected eof".to_string()),
+                None => {
+                    return Err(JsonError {
+                        message: "unexpected eof",
+                        token: None,
+                    })
+                }
             }
         }
 
         Ok(JsonNode::Object(obj))
     }
 
-    fn array(&mut self) -> Result<JsonNode, String> {
+    fn array(&mut self) -> Result<JsonNode, JsonError<'a>> {
         let mut arr: Vec<JsonNode> = vec![];
         loop {
             let token = self.peek();
             if token.is_none() {
-                return Err("eof".to_string());
+                return Err(JsonError {
+                    message: "eof",
+                    token: None,
+                });
             }
 
-            let value = match token.unwrap() {
-                Token::RightSquareBracket { .. } => {
+            let value = match token.unwrap().token_type {
+                TokenType::RightSquareBracket { .. } => {
                     self.advance();
                     break;
                 }
@@ -111,27 +183,43 @@ impl<'a> JsonParser<'a> {
                 Err(e) => return Err(e),
             }
 
-            match self.advance() {
-                Some(token) => match token {
-                    Token::RightSquareBracket { .. } => break,
-                    Token::Comma { .. } => continue,
-                    _ => return Err(format!("error: expected , or ] got: {}", token)),
+            let token = self.advance();
+
+            match token {
+                Some(token) => match token.token_type {
+                    TokenType::RightSquareBracket { .. } => break,
+                    TokenType::Comma { .. } => continue,
+                    _ => {
+                        // return Err(JsonError {
+                        //     message: "expected comma or end of array",
+                        //     token: Some(token),
+                        // })
+                        todo!()
+                    }
                 },
-                None => return Err("Error: unexpected eof".to_string()),
+                None => {
+                    return Err(JsonError {
+                        message: "unexpected eof",
+                        token: None,
+                    })
+                }
             }
         }
 
         Ok(JsonNode::Array(arr))
     }
 
-    fn string(s: &str) -> Result<JsonNode, String> {
+    fn string(s: &str) -> Result<JsonNode, JsonError> {
         match JsonParser::escape(s) {
             Ok(s) => Ok(JsonNode::String(s)),
-            Err(msg) => Err(msg),
+            Err(message) => Err(JsonError {
+                message,
+                token: None,
+            }),
         }
     }
 
-    fn escape(s: &str) -> Result<String, String> {
+    fn escape(s: &str) -> Result<String, &str> {
         let mut chars = s.chars().peekable();
         let mut escaped = String::with_capacity(s.len());
 
@@ -140,7 +228,7 @@ impl<'a> JsonParser<'a> {
         loop {
             let c = match chars.next() {
                 Some(c) => c,
-                None => return Err("unexpected string end".to_string()),
+                None => return Err("unexpected string end"),
             };
 
             if c == '\"' {
@@ -170,21 +258,21 @@ impl<'a> JsonParser<'a> {
                         for _ in 0..4 {
                             match chars.next() {
                                 Some(c) => hexs.push(c),
-                                None => return Err("unexpected eof".to_string()),
+                                None => return Err("unexpected eof"),
                             };
                         }
                         let x = match u32::from_str_radix(&hexs, 16) {
                             Ok(n) => n,
-                            Err(_) => return Err("parse \\u error".to_string()),
+                            Err(_) => return Err("parse \\u error"),
                         };
                         match char::from_u32(x) {
                             Some(c) => escaped.push(c),
-                            None => return Err("parse \\u error".to_string()),
+                            None => return Err("parse \\u error"),
                         }
                     }
                     _ => unreachable!(),
                 },
-                None => return Err("invalid token".to_string()),
+                None => return Err("invalid token"),
             };
         }
 
@@ -195,7 +283,7 @@ impl<'a> JsonParser<'a> {
         JsonNode::Number(s.parse::<f64>().unwrap())
     }
 
-    fn advance(&mut self) -> Option<Token> {
+    fn advance(&mut self) -> Option<Token<'a>> {
         if !self.buffer.is_empty() {
             let token = self.buffer.pop_front();
             return token;
@@ -204,12 +292,12 @@ impl<'a> JsonParser<'a> {
         self.tokenizer.next()
     }
 
-    fn peek(&mut self) -> Option<Token> {
+    fn peek(&mut self) -> Option<&Token<'a>> {
         let token = self.tokenizer.next();
         match token {
             Some(token) => {
                 self.buffer.push_back(token);
-                Some(token)
+                self.buffer.back()
             }
             None => None,
         }

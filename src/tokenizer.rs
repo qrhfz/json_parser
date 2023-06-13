@@ -1,4 +1,4 @@
-use crate::token::Token;
+use crate::token::{Token, TokenType};
 
 pub struct Tokenizer<'a> {
     start: usize,
@@ -38,52 +38,59 @@ impl<'a> Tokenizer<'a> {
         match c.unwrap() {
             b'{' => {
                 self.advance();
-                Some(Token::LeftCurlyBracket {
+                Some(Token {
                     line: self.line,
                     index,
+                    token_type: TokenType::LeftCurlyBracket,
                 })
             }
             b'}' => {
                 self.advance();
-                Some(Token::RightCurlyBracket {
+                Some(Token {
                     line: self.line,
                     index,
+                    token_type: TokenType::RightCurlyBracket,
                 })
             }
             b'[' => {
                 self.advance();
-                Some(Token::LeftSquareBracket {
+                Some(Token {
                     line: self.line,
                     index,
+                    token_type: TokenType::LeftSquareBracket,
                 })
             }
             b']' => {
                 self.advance();
-                Some(Token::RightSquareBracket {
+                Some(Token {
                     line: self.line,
                     index,
+                    token_type: TokenType::RightSquareBracket,
                 })
             }
             b':' => {
                 self.advance();
-                Some(Token::Colon {
+                Some(Token {
                     line: self.line,
                     index,
+                    token_type: TokenType::Colon,
                 })
             }
             b',' => {
                 self.advance();
-                Some(Token::Comma {
+                Some(Token {
                     line: self.line,
                     index,
+                    token_type: TokenType::Comma,
                 })
             }
             b't' => {
                 if self.check("true") {
                     self.current += 4;
-                    Some(Token::True {
+                    Some(Token {
                         line: self.line,
                         index,
+                        token_type: TokenType::True,
                     })
                 } else {
                     Some(self.unknown_keyword())
@@ -92,9 +99,10 @@ impl<'a> Tokenizer<'a> {
             b'f' => {
                 if self.check("false") {
                     self.current += 5;
-                    Some(Token::False {
+                    Some(Token {
                         line: self.line,
                         index,
+                        token_type: TokenType::False,
                     })
                 } else {
                     Some(self.unknown_keyword())
@@ -104,9 +112,10 @@ impl<'a> Tokenizer<'a> {
             b'n' => {
                 if self.check("null") {
                     self.current += 4;
-                    Some(Token::Null {
+                    Some(Token {
                         line: self.line,
                         index,
+                        token_type: TokenType::Null,
                     })
                 } else {
                     Some(self.unknown_keyword())
@@ -132,10 +141,12 @@ impl<'a> Tokenizer<'a> {
         }
 
         if self.at_end() {
-            return Token::Number {
+            return Token {
                 line: self.line,
                 index: self.start,
-                text: &self.src[self.start..self.current],
+                token_type: TokenType::Number {
+                    text: &self.src[self.start..self.current],
+                },
             };
         }
 
@@ -156,10 +167,12 @@ impl<'a> Tokenizer<'a> {
             }
         }
 
-        Token::Number {
+        Token {
             line: self.line,
             index: self.start,
-            text: &self.src[self.start..self.current],
+            token_type: TokenType::Number {
+                text: &self.src[self.start..self.current],
+            },
         }
     }
 
@@ -170,10 +183,12 @@ impl<'a> Tokenizer<'a> {
         while !self.at_end() {
             if self.check_byte(b'"') {
                 self.advance();
-                return Token::String {
+                return Token {
                     line: self.line,
                     index: self.start,
-                    text: &self.src[self.start..self.current],
+                    token_type: TokenType::String {
+                        text: &self.src[self.start..self.current],
+                    },
                 };
             }
 
@@ -189,15 +204,21 @@ impl<'a> Tokenizer<'a> {
             self.advance();
         }
 
-        Token::Error {
+        Token {
             line: self.line,
             index: self.start,
-            message: "unterminated string",
+            token_type: TokenType::Error {
+                message: "unterminated string",
+            },
         }
     }
 
     fn skip_white_spaces(&mut self) {
         while self.current < self.src.len() {
+            if self.peek().unwrap() == b'\n' {
+                self.line += 1;
+            }
+
             if !self.is_space() {
                 break;
             }
@@ -226,10 +247,12 @@ impl<'a> Tokenizer<'a> {
             }
         }
 
-        return Token::Error {
+        return Token {
             line: self.line,
             index: self.start,
-            message: "unknown keyword",
+            token_type: TokenType::Error {
+                message: "unknown keyword",
+            },
         };
     }
 
@@ -294,10 +317,10 @@ mod tests {
 
     #[test]
     fn number() {
-        let expected = Token::Number {
+        let expected = Token {
             line: 1,
             index: 0,
-            text: "1234",
+            token_type: TokenType::Number { text: "1234" },
         };
         let actual = Tokenizer::new("1234").next().unwrap();
         assert_eq!(&actual, &expected);
@@ -305,10 +328,10 @@ mod tests {
 
     #[test]
     fn number_with_spaces() {
-        let expected = Token::Number {
+        let expected = Token {
             line: 1,
             index: 4,
-            text: "1234",
+            token_type: TokenType::Number { text: "1234" },
         };
         let actual = Tokenizer::new("    1234    ").next().unwrap();
         assert_eq!(&actual, &expected);
@@ -316,10 +339,10 @@ mod tests {
 
     #[test]
     fn number_with_fraction() {
-        let expected = Token::Number {
+        let expected = Token {
             line: 1,
             index: 0,
-            text: "1234.5678",
+            token_type: TokenType::Number { text: "1234.5678" },
         };
         let actual = Tokenizer::new("1234.5678").next().unwrap();
         assert_eq!(&actual, &expected);
@@ -327,10 +350,12 @@ mod tests {
 
     #[test]
     fn number_with_exponent() {
-        let expected = Token::Number {
+        let expected = Token {
             line: 1,
             index: 0,
-            text: "1234.5678E9",
+            token_type: TokenType::Number {
+                text: "1234.5678E9",
+            },
         };
         let actual = Tokenizer::new("1234.5678E9").next().unwrap();
         assert_eq!(&actual, &expected);
@@ -338,10 +363,12 @@ mod tests {
 
     #[test]
     fn number_with_positive_sign_exponent() {
-        let expected = Token::Number {
+        let expected = Token {
             line: 1,
             index: 0,
-            text: "1234.5678E+9",
+            token_type: TokenType::Number {
+                text: "1234.5678E+9",
+            },
         };
         let actual = Tokenizer::new("1234.5678E+9").next().unwrap();
         assert_eq!(&actual, &expected);
@@ -349,10 +376,12 @@ mod tests {
 
     #[test]
     fn number_with_negative_sign_exponent() {
-        let expected = Token::Number {
+        let expected = Token {
             line: 1,
             index: 0,
-            text: "1234.5678E-9",
+            token_type: TokenType::Number {
+                text: "1234.5678E-9",
+            },
         };
         let actual = Tokenizer::new("1234.5678E-9").next().unwrap();
         assert_eq!(&actual, &expected);
@@ -360,10 +389,12 @@ mod tests {
 
     #[test]
     fn string() {
-        let expected = Token::String {
-            index: 0,
+        let expected = Token {
             line: 1,
-            text: r#""string""#,
+            index: 0,
+            token_type: TokenType::String {
+                text: r#""string""#,
+            },
         };
         let actual = Tokenizer::new(r#""string""#).next().unwrap();
         assert_eq!(&actual, &expected);
@@ -371,10 +402,12 @@ mod tests {
 
     #[test]
     fn unterminated_string() {
-        let expected = Token::Error {
-            index: 0,
+        let expected = Token {
             line: 1,
-            message: "unterminated string",
+            index: 0,
+            token_type: TokenType::Error {
+                message: "unterminated string",
+            },
         };
         let actual = Tokenizer::new(r#""string"#).next().unwrap();
         assert_eq!(&actual, &expected);
@@ -382,10 +415,12 @@ mod tests {
 
     #[test]
     fn string_with_inner_quote_mark() {
-        let expected = Token::String {
+        let expected = Token {
             line: 1,
             index: 0,
-            text: r#""abc\"def""#,
+            token_type: TokenType::String {
+                text: r#""abc\"def""#,
+            },
         };
         let actual = Tokenizer::new(r#""abc\"def""#).next().unwrap();
         assert_eq!(&actual, &expected);
@@ -394,15 +429,51 @@ mod tests {
     #[test]
     fn symbols_and_keywords() {
         let expected = vec![
-            Token::LeftCurlyBracket { line: 1, index: 0 },
-            Token::RightCurlyBracket { line: 1, index: 1 },
-            Token::LeftSquareBracket { line: 1, index: 2 },
-            Token::RightSquareBracket { line: 1, index: 3 },
-            Token::Comma { line: 1, index: 4 },
-            Token::Colon { line: 1, index: 5 },
-            Token::Null { line: 1, index: 7 },
-            Token::True { line: 1, index: 12 },
-            Token::False { line: 1, index: 17 },
+            Token {
+                line: 1,
+                index: 0,
+                token_type: TokenType::LeftCurlyBracket,
+            },
+            Token {
+                line: 1,
+                index: 1,
+                token_type: TokenType::RightCurlyBracket,
+            },
+            Token {
+                line: 1,
+                index: 2,
+                token_type: TokenType::LeftSquareBracket,
+            },
+            Token {
+                line: 1,
+                index: 3,
+                token_type: TokenType::RightSquareBracket,
+            },
+            Token {
+                line: 1,
+                index: 4,
+                token_type: TokenType::Comma,
+            },
+            Token {
+                line: 1,
+                index: 5,
+                token_type: TokenType::Colon,
+            },
+            Token {
+                line: 1,
+                index: 7,
+                token_type: TokenType::Null,
+            },
+            Token {
+                line: 1,
+                index: 12,
+                token_type: TokenType::True,
+            },
+            Token {
+                line: 1,
+                index: 17,
+                token_type: TokenType::False,
+            },
         ];
         let mut tokenizer = Tokenizer::new("{}[],: null true false");
 

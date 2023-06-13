@@ -5,13 +5,13 @@ use json_parser::parser::parse;
 fn main() {
     let start = SystemTime::now();
 
-    let data = fs::read_to_string("large-file.json").expect("Unable to read file");
+    let data = fs::read_to_string("small-file.json").expect("Unable to read file");
 
     let res = parse(&data);
 
     match res {
         Ok(_) => println!("ok"),
-        Err(msg) => eprint!("error: {}", msg),
+        Err(msg) => eprintln!("{}", msg),
     }
 
     let end = SystemTime::now();
